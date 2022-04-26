@@ -13,14 +13,17 @@ import (
 	"time"
 
 	"github.com/fox-one/mixin-sdk-go"
+	"github.com/gofrs/uuid"
+	"github.com/manifoldco/promptui"
 	"github.com/shopspring/decimal"
 )
 
 type Config struct {
-	AccessToken string
-	ClientID    string
-	Scope       string
-	Verbose     bool
+	AccessToken  string
+	ClientID     string
+	ClientSecret string
+	Scope        string
+	Verbose      bool
 
 	AssetID            string
 	OpponentID         string
@@ -39,6 +42,7 @@ func main() {
 
 	var total decimal.Decimal
 	ids := make([]string, len(snapshots))
+	fmt.Println()
 	for i, s := range snapshots {
 		total = total.Add(s.Amount)
 		ids[i] = s.SnapshotID
@@ -46,9 +50,11 @@ func main() {
 			fmt.Printf("%s -> (amount: %s, created_at: %s)\n", s.SnapshotID, s.Amount.String(), s.CreatedAt.Format(time.RFC3339))
 		}
 	}
-	fmt.Println()
 
-	fmt.Printf("ids: (%s)\n\n", strings.Join(ids, ", "))
+	if cfg.Verbose {
+		fmt.Printf("\nids: (%s)\n\n", strings.Join(ids, ", "))
+	}
+
 	fmt.Printf("count: %d, total: %s\n", len(snapshots), total)
 	if cfg.SnapshotOutputPath != "" {
 		err := ioutil.WriteFile(cfg.SnapshotOutputPath, []byte(strings.Join(ids, ",")), 0644)
@@ -89,7 +95,8 @@ func initConfig() *Config {
 
 	flag.StringVar(&cfg.AccessToken, "token", "", "Access token")
 	flag.StringVar(&cfg.ClientID, "client", "", "Mixin client id")
-	flag.StringVar(&cfg.Scope, "scope", "", "Mixin oauth scope (except SNAPSHOTS:READ)")
+	flag.StringVar(&cfg.ClientSecret, "secret", "", "Mixin client secret")
+	flag.StringVar(&cfg.Scope, "scope", "", "Mixin oauth scope (except SNAPSHOTS:READ+PROFILE:READ)")
 	flag.BoolVar(&cfg.Verbose, "verbose", false, "Verbose log")
 
 	flag.StringVar(&cfg.AssetID, "asset", "", "Asset id")
@@ -100,13 +107,39 @@ func initConfig() *Config {
 
 	flag.Parse()
 
-	if cfg.AssetID == "" {
-		log.Fatalln("asset not set")
+	if cfg.AccessToken == "" && (cfg.ClientID == "" || cfg.ClientSecret == "") {
+		log.Fatalln("you must set one of token and (client+secret)")
 	}
 
-	if cfg.OpponentID == "" {
-		log.Fatalln("opponent not set")
+	validateUUID := func(input string) error {
+		_, err := uuid.FromString(input)
+		return err
 	}
+
+	var err error
+	if cfg.AssetID == "" {
+		prompt := promptui.Prompt{
+			Label:    "AssetID",
+			Validate: validateUUID,
+		}
+
+		cfg.AssetID, err = prompt.Run()
+	} else {
+		err = validateUUID(cfg.AssetID)
+	}
+	fatalIfErr(err)
+
+	if cfg.OpponentID == "" {
+		prompt := promptui.Prompt{
+			Label:    "OpponentID",
+			Validate: validateUUID,
+		}
+
+		cfg.OpponentID, err = prompt.Run()
+	} else {
+		err = validateUUID(cfg.OpponentID)
+	}
+	fatalIfErr(err)
 
 	if startTime != "" {
 		cfg.StartTime = mustParseTime(startTime)
@@ -116,22 +149,25 @@ func initConfig() *Config {
 	}
 
 	if cfg.AccessToken == "" {
-		if cfg.ClientID == "" {
-			log.Fatalln("you must set one of token and client")
-		}
-
 		scope := cfg.Scope
 		if scope != "" {
 			scope += "+"
 		}
-		scope += "SNAPSHOTS:READ"
-		err := openBrowser(fmt.Sprintf("https://www.mixin.one/oauth/authorize?client_id=%s&scope=%s", cfg.ClientID, scope))
+		scope += "SNAPSHOTS:READ+PROFILE:READ"
+		err := openBrowser(fmt.Sprintf("https://mixin-oauth.fox.one?client_id=%s&scope=%s", cfg.ClientID, scope))
 		fatalIfErr(err)
 
-		fmt.Println("Enter Your Token: ")
-		_, err = fmt.Scan(&cfg.AccessToken)
+		prompt := promptui.Prompt{
+			Label: "OAuth Code",
+		}
+		code, err := prompt.Run()
 		fatalIfErr(err)
-		fmt.Println()
+
+		cfg.AccessToken, _, err = mixin.AuthorizeToken(context.Background(), cfg.ClientID, cfg.ClientSecret, code, "")
+		if cfg.Verbose {
+			fmt.Printf("\ntoken: %s\n\n", cfg.AccessToken)
+		}
+		fatalIfErr(err)
 	}
 
 	return cfg
