@@ -42,7 +42,6 @@ func main() {
 
 	var total decimal.Decimal
 	ids := make([]string, len(snapshots))
-	fmt.Println()
 	for i, s := range snapshots {
 		total = total.Add(s.Amount)
 		ids[i] = s.SnapshotID
@@ -164,10 +163,8 @@ func initConfig() *Config {
 		fatalIfErr(err)
 
 		cfg.AccessToken, _, err = mixin.AuthorizeToken(context.Background(), cfg.ClientID, cfg.ClientSecret, code, "")
-		if cfg.Verbose {
-			fmt.Printf("\ntoken: %s\n\n", cfg.AccessToken)
-		}
 		fatalIfErr(err)
+		fmt.Printf("\ntoken: %s\n\n", cfg.AccessToken)
 	}
 
 	return cfg
