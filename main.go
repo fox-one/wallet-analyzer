@@ -20,6 +20,7 @@ type Config struct {
 	AccessToken string
 	ClientID    string
 	Scope       string
+	Verbose     bool
 
 	AssetID            string
 	OpponentID         string
@@ -38,11 +39,16 @@ func main() {
 
 	var total decimal.Decimal
 	ids := make([]string, len(snapshots))
-	for _, s := range snapshots {
+	for i, s := range snapshots {
 		total = total.Add(s.Amount)
-		ids = append(ids, s.SnapshotID)
+		ids[i] = s.SnapshotID
+		if cfg.Verbose {
+			fmt.Printf("%s -> (amount: %s, created_at: %s)\n", s.SnapshotID, s.Amount.String(), s.CreatedAt.Format(time.RFC3339))
+		}
 	}
+	fmt.Println()
 
+	fmt.Printf("ids: (%s)\n\n", strings.Join(ids, ", "))
 	fmt.Printf("count: %d, total: %s\n", len(snapshots), total)
 	if cfg.SnapshotOutputPath != "" {
 		err := ioutil.WriteFile(cfg.SnapshotOutputPath, []byte(strings.Join(ids, ",")), 0644)
@@ -84,6 +90,7 @@ func initConfig() *Config {
 	flag.StringVar(&cfg.AccessToken, "token", "", "Access token")
 	flag.StringVar(&cfg.ClientID, "client", "", "Mixin client id")
 	flag.StringVar(&cfg.Scope, "scope", "", "Mixin oauth scope (except SNAPSHOTS:READ)")
+	flag.BoolVar(&cfg.Verbose, "verbose", false, "Verbose log")
 
 	flag.StringVar(&cfg.AssetID, "asset", "", "Asset id")
 	flag.StringVar(&cfg.OpponentID, "opponent", "", "Opponent id")
@@ -118,7 +125,7 @@ func initConfig() *Config {
 			scope += "+"
 		}
 		scope += "SNAPSHOTS:READ"
-		err := openBrowser(fmt.Sprintf("https://mixin-oauth.fox.one/?client_id=%s&scope=%s", cfg.ClientID, scope))
+		err := openBrowser(fmt.Sprintf("https://www.mixin.one/oauth/authorize?client_id=%s&scope=%s", cfg.ClientID, scope))
 		fatalIfErr(err)
 
 		fmt.Println("Enter Your Token: ")
