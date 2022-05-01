@@ -1,19 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/fox-one/mixin-sdk-go"
-	"github.com/gofrs/uuid"
 	"github.com/manifoldco/promptui"
 	"github.com/shopspring/decimal"
 )
@@ -22,14 +24,13 @@ type Config struct {
 	AccessToken  string
 	ClientID     string
 	ClientSecret string
-	Scope        string
-	Verbose      bool
 
-	AssetID            string
-	OpponentID         string
-	StartTime          time.Time
-	EndTime            time.Time
-	SnapshotOutputPath string
+	AssetID        string
+	OpponentID     string
+	StartTime      time.Time
+	EndTime        time.Time
+	OutputPath     string
+	FormatTemplate *template.Template
 }
 
 func main() {
@@ -40,24 +41,35 @@ func main() {
 		os.Exit(0)
 	}
 
-	var total decimal.Decimal
+	writer := new(bytes.Buffer)
+
 	ids := make([]string, len(snapshots))
+	asm := map[string][]*mixin.Snapshot{}
 	for i, s := range snapshots {
-		total = total.Add(s.Amount)
-		ids[i] = s.SnapshotID
-		if cfg.Verbose {
-			fmt.Printf("%s -> (amount: %s, created_at: %s)\n", s.SnapshotID, s.Amount.String(), s.CreatedAt.Format(time.RFC3339))
+		asm[s.AssetID] = append(asm[s.AssetID], s)
+		ids[i] = fmt.Sprintf("'%s'", s.SnapshotID)
+		tpl := new(bytes.Buffer)
+		fatalIfErr(cfg.FormatTemplate.Execute(tpl, s))
+		fmt.Fprintf(writer, "%s\n", tpl.String())
+	}
+
+	fmt.Fprintf(writer, "\nids: (%s)\n\n", strings.Join(ids, ", "))
+
+	for asset, ss := range asm {
+		count := len(ss)
+		var total decimal.Decimal
+		for _, s := range ss {
+			total = total.Add(s.Amount)
 		}
+
+		fmt.Fprintf(writer, "asset: %s -> (count: %d, total: %s)\n", asset, count, total)
 	}
 
-	if cfg.Verbose {
-		fmt.Printf("\nids: (%s)\n\n", strings.Join(ids, ", "))
-	}
-
-	fmt.Printf("count: %d, total: %s\n", len(snapshots), total)
-	if cfg.SnapshotOutputPath != "" {
-		err := ioutil.WriteFile(cfg.SnapshotOutputPath, []byte(strings.Join(ids, ",")), 0644)
+	if cfg.OutputPath != "" {
+		err := ioutil.WriteFile(cfg.OutputPath, writer.Bytes(), 0644)
 		fatalIfErr(err)
+	} else {
+		io.Copy(os.Stdout, writer)
 	}
 }
 
@@ -90,55 +102,24 @@ func getSnapshots(ctx context.Context, cfg *Config) []*mixin.Snapshot {
 
 func initConfig() *Config {
 	cfg := &Config{}
-	var startTime, endTime string
+	var startTime, endTime, format string
 
 	flag.StringVar(&cfg.AccessToken, "token", "", "Access token")
 	flag.StringVar(&cfg.ClientID, "client", "", "Mixin client id")
 	flag.StringVar(&cfg.ClientSecret, "secret", "", "Mixin client secret")
-	flag.StringVar(&cfg.Scope, "scope", "", "Mixin oauth scope (except SNAPSHOTS:READ+PROFILE:READ)")
-	flag.BoolVar(&cfg.Verbose, "verbose", false, "Verbose log")
 
 	flag.StringVar(&cfg.AssetID, "asset", "", "Asset id")
 	flag.StringVar(&cfg.OpponentID, "opponent", "", "Opponent id")
 	flag.StringVar(&startTime, "start", "", "Start time, RFC3339 format")
 	flag.StringVar(&endTime, "end", "", "End time, RFC3339 format")
-	flag.StringVar(&cfg.SnapshotOutputPath, "output", "", "Snapshots id output path")
+	flag.StringVar(&cfg.OutputPath, "output", "", "Output file path")
+	flag.StringVar(&format, "format", "id: {{ .SnapshotID }} -> (asset: {{ .AssetID }}, amount: {{ .Amount }})", "Snapshot format")
 
 	flag.Parse()
 
 	if cfg.AccessToken == "" && (cfg.ClientID == "" || cfg.ClientSecret == "") {
 		log.Fatalln("you must set one of token and (client+secret)")
 	}
-
-	validateUUID := func(input string) error {
-		_, err := uuid.FromString(input)
-		return err
-	}
-
-	var err error
-	if cfg.AssetID == "" {
-		prompt := promptui.Prompt{
-			Label:    "AssetID",
-			Validate: validateUUID,
-		}
-
-		cfg.AssetID, err = prompt.Run()
-	} else {
-		err = validateUUID(cfg.AssetID)
-	}
-	fatalIfErr(err)
-
-	if cfg.OpponentID == "" {
-		prompt := promptui.Prompt{
-			Label:    "OpponentID",
-			Validate: validateUUID,
-		}
-
-		cfg.OpponentID, err = prompt.Run()
-	} else {
-		err = validateUUID(cfg.OpponentID)
-	}
-	fatalIfErr(err)
 
 	if startTime != "" {
 		cfg.StartTime = mustParseTime(startTime)
@@ -148,11 +129,7 @@ func initConfig() *Config {
 	}
 
 	if cfg.AccessToken == "" {
-		scope := cfg.Scope
-		if scope != "" {
-			scope += "+"
-		}
-		scope += "SNAPSHOTS:READ+PROFILE:READ"
+		scope := "SNAPSHOTS:READ+PROFILE:READ"
 		err := openBrowser(fmt.Sprintf("https://mixin-oauth.fox.one?client_id=%s&scope=%s", cfg.ClientID, scope))
 		fatalIfErr(err)
 
@@ -166,6 +143,8 @@ func initConfig() *Config {
 		fatalIfErr(err)
 		fmt.Printf("\ntoken: %s\n\n", cfg.AccessToken)
 	}
+
+	cfg.FormatTemplate = template.Must(template.New("").Parse(format))
 
 	return cfg
 }
